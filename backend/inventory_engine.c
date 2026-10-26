@@ -14,6 +14,8 @@ struct SwEngine {
     int32_t count;
     int32_t *id_sorted; /* indices ordered by id, used by binary search */
     HashTable *index;   /* id -> array index */
+    AvlTree *by_price;  /* price range queries */
+    Trie *names;        /* name prefix search */
 };
 
 int32_t sw_api_version(void)
@@ -94,7 +96,10 @@ SwEngine *sw_engine_create(const Product *products, int32_t count, int32_t bucke
     engine->products = malloc(slots * sizeof *engine->products);
     engine->id_sorted = malloc(slots * sizeof *engine->id_sorted);
     engine->index = ht_create(bucket_count > 0 ? bucket_count : auto_bucket_count(count));
-    if (engine->products == NULL || engine->id_sorted == NULL || engine->index == NULL)
+    engine->by_price = avl_create(engine->products, count);
+    engine->names = trie_create(count);
+    if (engine->products == NULL || engine->id_sorted == NULL || engine->index == NULL ||
+        engine->by_price == NULL || engine->names == NULL)
         return fail(engine, SW_ERR_NO_MEMORY, error_out);
 
     engine->count = count;
@@ -103,6 +108,8 @@ SwEngine *sw_engine_create(const Product *products, int32_t count, int32_t bucke
     /* Build the hash index; it also detects duplicate ids. */
     for (int32_t i = 0; i < count; i++) {
         int32_t err = ht_insert(engine->index, engine->products[i].id, i);
+        if (err == SW_OK) err = avl_insert(engine->by_price, i);
+        if (err == SW_OK) err = trie_insert(engine->names, engine->products[i].name, i);
         if (err != SW_OK) return fail(engine, err, error_out);
         engine->id_sorted[i] = i;
     }
@@ -121,6 +128,8 @@ void sw_engine_destroy(SwEngine *engine)
     free(engine->products);
     free(engine->id_sorted);
     ht_destroy(engine->index);
+    avl_destroy(engine->by_price);
+    trie_destroy(engine->names);
     free(engine);
 }
 
@@ -174,6 +183,12 @@ int32_t sw_sort_products(const SwEngine *engine, int32_t algorithm, int32_t key,
     if (algorithm == SW_ALGO_INSERTION)
         return insertion_sort_indices(engine->products, out_indices, engine->count, key,
                                       descending, stats);
+    if (algorithm == SW_ALGO_QUICK)
+        return quick_sort_indices(engine->products, out_indices, engine->count, key,
+                                  descending, stats);
+    if (algorithm == SW_ALGO_HEAP)
+        return heap_sort_indices(engine->products, out_indices, engine->count, key,
+                                 descending, stats);
     return SW_ERR_INVALID_VALUE;
 }
 
@@ -274,4 +289,35 @@ int32_t sw_hash_chain_lengths(const SwEngine *engine, int32_t *out, int32_t capa
 {
     if (engine == NULL) return SW_ERR_NULL_POINTER;
     return ht_chain_lengths(engine->index, out, capacity);
+}
+
+int32_t sw_price_range(const SwEngine *engine, double min_price, double max_price,
+                       int32_t *out_indices, int32_t capacity, int32_t *out_count,
+                       int64_t *nodes_visited)
+{
+    if (engine == NULL) return SW_ERR_NULL_POINTER;
+    return avl_range(engine->by_price, min_price, max_price, out_indices, capacity, out_count,
+                     nodes_visited);
+}
+
+int32_t sw_prefix_search(const SwEngine *engine, const char *prefix, int32_t *out_indices,
+                         int32_t capacity, int32_t *out_count, int64_t *nodes_visited)
+{
+    if (engine == NULL) return SW_ERR_NULL_POINTER;
+    return trie_prefix(engine->names, prefix, out_indices, capacity, out_count, nodes_visited);
+}
+
+int32_t sw_index_stats(const SwEngine *engine, IndexStats *out)
+{
+    if (engine == NULL || out == NULL) return SW_ERR_NULL_POINTER;
+    avl_stats(engine->by_price, out);
+    trie_stats(engine->names, out);
+    return SW_OK;
+}
+
+int32_t sw_avl_snapshot(const SwEngine *engine, AvlNodeInfo *out, int32_t capacity,
+                        int32_t *out_count)
+{
+    if (engine == NULL) return SW_ERR_NULL_POINTER;
+    return avl_snapshot(engine->by_price, out, capacity, out_count);
 }

@@ -5,7 +5,8 @@
 
 CC = gcc
 CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wpedantic
-SRCS = search.c hash_table.c sorting.c max_heap.c inventory_engine.c
+SRCS = search.c hash_table.c sorting.c max_heap.c avl_tree.c trie.c knapsack.c graph.c \
+       fifo_queue.c inventory_engine.c
 HDRS = inventory_types.h
 
 ifeq ($(OS),Windows_NT)

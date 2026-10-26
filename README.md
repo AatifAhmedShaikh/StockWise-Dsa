@@ -4,9 +4,17 @@ A college Data Structures & Algorithms project. The interface is **Python + Stre
 The core algorithms are implemented from scratch in **C11** and compiled into a shared
 library that Python calls through **ctypes**:
 
-- linear search, binary search, a hash table with separate chaining
-- Merge Sort and Insertion Sort
-- Max-Heap and priority queue
+| Concept (C) | File | Feature in the app |
+|---|---|---|
+| Linear and binary search | `search.c` | ID search comparison |
+| Hash table, separate chaining | `hash_table.c` | Product lookup by ID |
+| Merge, Insertion, Quick, Heap Sort | `sorting.c` | Sorted product views |
+| Max-Heap priority queue | `max_heap.c` | Restock ranking |
+| AVL tree (self-balancing BST) | `avl_tree.c` | Price range filter |
+| Trie (prefix tree) | `trie.c` | Name autocomplete |
+| 0/1 Knapsack, dynamic programming (+ greedy) | `knapsack.c` | Budget restock planner |
+| Graph + Dijkstra shortest path | `graph.c` | Delivery route planner |
+| Circular FIFO queue (ring buffer) | `fifo_queue.c` | Stock lots and stock age |
 
 **SQLite** stores products and stock transactions.
 
@@ -30,12 +38,15 @@ More documents:
 
 ```mermaid
 flowchart TD
-    UI["Streamlit UI (app.py)<br/>7 pages"] -->|product dicts| BR["c_bridge.py<br/>validation + ctypes structs"]
+    UI["Streamlit UI (app.py)<br/>8 pages"] -->|product dicts| BR["c_bridge.py<br/>validation + ctypes structs"]
     BR -->|"Product[] , int32 args"| ENG["libstockwise (C)<br/>inventory_engine.c"]
     ENG --> S["search.c<br/>linear / binary"]
     ENG --> H["hash_table.c<br/>separate chaining"]
-    ENG --> SO["sorting.c<br/>merge / insertion"]
+    ENG --> SO["sorting.c<br/>merge / insertion / quick / heap"]
     ENG --> MH["max_heap.c<br/>priority queue"]
+    ENG --> AVL["avl_tree.c<br/>price range"]
+    ENG --> TR["trie.c<br/>name prefixes"]
+    BR --> PL["knapsack.c · graph.c · fifo_queue.c<br/>stateless planning functions"]
     ENG -->|"indices + operation counts + error codes"| BR
     UI <-->|"CRUD, stock IN/OUT (SQL transactions)"| DB["database.py → stockwise.db (SQLite)"]
     DB -->|"list_products()"| UI
@@ -48,8 +59,13 @@ flowchart TD
 2. `c_bridge.Engine(products)` validates each record and packs it into a ctypes
    `CProduct` array (layout identical to the C `Product` struct). It then calls
    `sw_engine_create()`.
-3. The C engine **copies** the array, builds the **hash table** (which also rejects
-   duplicate IDs), and builds an **id-sorted index with Merge Sort** for binary search.
+3. The C engine **copies** the array and builds its indexes:
+   - a **hash table**, which also rejects duplicate IDs
+   - an **id-sorted index** with Merge Sort, for binary search
+   - an **AVL tree** by price
+   - a **trie** of name word starts
+   The planning functions (knapsack, Dijkstra, FIFO lots) are stateless. Python passes
+   in arrays and gets results back.
 4. The UI calls e.g. `engine.binary_search(1042)`. C fills a `SearchResult`
    (index, found flag, comparisons) in a buffer that Python owns, and Python maps the
    index back to the product dict.
@@ -68,7 +84,12 @@ The C engine never stores inventory itself; it is a read-only snapshot used for 
 | `sw_engine_destroy(engine)` | Free everything (NULL-safe) |
 | `sw_linear_search_id`, `sw_binary_search_id`, `sw_hash_search_id` | Search by ID → `SearchResult` |
 | `sw_linear_search_name` | Case-insensitive substring search |
-| `sw_sort_products(engine, algorithm, key, descending, out, cap, &stats)` | Merge/Insertion sort by name, price, quantity, value |
+| `sw_sort_products(engine, algorithm, key, descending, out, cap, &stats)` | Merge/Insertion/Quick/Heap sort by name, price, quantity, value |
+| `sw_price_range`, `sw_avl_snapshot`, `sw_index_stats` | AVL range query, tree shape, tree and trie statistics |
+| `sw_prefix_search` | Trie autocomplete (alphabetical, de-duplicated) |
+| `sw_knapsack`, `sw_knapsack_greedy` | Budget plan: exact DP (optional DP table) vs greedy |
+| `sw_shortest_path` | Dijkstra: distances to every node + route to the target |
+| `sw_fifo_lots` | Replay stock moves through a circular queue → lots on hand |
 | `sw_restock_ranking(engine, out, cap, &count, heap_snapshot, &stats)` | Max-Heap priority ranking |
 | `sw_hash_stats`, `sw_hash_chain_lengths` | Buckets, collisions, chain lengths |
 | `sw_error_message(code)` | Static message string for an error code |
@@ -135,7 +156,7 @@ On macOS, use `xcode-select --install` for the compiler. `make` builds `libstock
    `mingw32-make` builds `backend\stockwise.dll`. Without make, you can build it
    directly:
    ```bat
-   gcc -std=c11 -O2 -Wall -shared -static-libgcc -o stockwise.dll search.c hash_table.c sorting.c max_heap.c inventory_engine.c
+   gcc -std=c11 -O2 -Wall -shared -static-libgcc -o stockwise.dll search.c hash_table.c sorting.c max_heap.c avl_tree.c trie.c knapsack.c graph.c fifo_queue.c inventory_engine.c
    ```
 
 Python and GCC must both be 64-bit. A 32-bit DLL cannot be loaded by 64-bit Python.
@@ -143,15 +164,16 @@ Python and GCC must both be 64-bit. A 32-bit DLL cannot be loaded by 64-bit Pyth
 To use a library somewhere else, set the environment variable `STOCKWISE_LIB` to its
 full path. To use another database file, set `STOCKWISE_DB`.
 
-The first run creates `stockwise.db` with 25 realistic sample products, each with an
-opening-stock transaction. Delete the file to reset the data.
+The first run creates `stockwise.db` with 25 realistic sample products and about 90 days
+of backdated deliveries and sales, so the charts and stock-age views have data to show.
+Delete the file to reset the data.
 
 ---
 
 ## 3. Testing
 
 ```bash
-cd backend && make test && cd ..                 # C tests (153 checks)
+cd backend && make test && cd ..                 # C tests (283 checks)
 python -m unittest discover -s tests -v          # Python tests (bridge + SQLite)
 ```
 
@@ -164,12 +186,19 @@ python -m unittest discover -s tests -v          # Python tests (bridge + SQLite
 | Empty arrays, NULL pointers, duplicate IDs, invalid values | `test_engine.c::test_empty_and_invalid`, `EmptyAndInvalidTests` |
 | Invalid price/quantity, insufficient stock, persistence, cascade delete | `test_database.py` |
 | C index refreshed after DB change | `test_database.py::test_engine_rebuilt_after_change_is_not_stale` |
+| Quick/Heap Sort with many duplicate keys and sorted input | `test_engine.c::test_quick_and_heap_sort`, `NewStructureTests` |
+| AVL balance and BST order (1,000 ascending inserts), range queries vs brute force | `test_engine.c::test_avl`, `test_price_range_matches_brute_force` |
+| Trie prefixes, word starts, de-duplication | `test_engine.c::test_trie`, `test_prefix_search` |
+| Knapsack DP optimal vs brute force (20 random cases), greedy shortfall | `test_engine.c::test_knapsack`, `test_knapsack_against_brute_force` |
+| Dijkstra paths, unreachable nodes, invalid edges | `test_engine.c::test_graph`, `test_shortest_path` |
+| FIFO queue wrap-around and growth, over-removal | `test_engine.c::test_fifo`, `test_fifo_lots` |
+| Seeded history consistent and matched by the C FIFO queue | `test_database.py::test_seeded_history_ends_at_listed_quantities` |
 
 The C tests were also run under AddressSanitizer and UndefinedBehaviorSanitizer:
 
 ```bash
 cd backend
-gcc -std=c11 -g -fsanitize=address,undefined -I. -o t tests/test_engine.c search.c hash_table.c sorting.c max_heap.c inventory_engine.c -lm
+gcc -std=c11 -g -fsanitize=address,undefined -I. -o t tests/test_engine.c search.c hash_table.c sorting.c max_heap.c avl_tree.c trie.c knapsack.c graph.c fifo_queue.c inventory_engine.c -lm
 ./t
 ```
 
@@ -218,26 +247,34 @@ Design notes:
   alone.
 
 1. **Dashboard**:
-   - KPIs: products, units, value, low and out-of-stock counts
-   - value by category, top-10 products by value (C Merge Sort)
+   - KPIs, with a 30-day stock sparkline
+   - stock movement chart
+   - "needs attention" list (Max-Heap)
+   - value by category, top products (Merge Sort)
    - recent transactions
-2. **Product Management**:
-   - view and filter products
-   - search by ID (C hash table) or name (C linear search)
+2. **Products**:
+   - card grid with category artwork, or a table view
+   - search by ID (hash table) or name prefix (trie, with substring fallback)
+   - price range filter (AVL tree)
    - add, edit, and delete with confirmation
-3. **Search and Sorting**: choose the algorithm and see the result, comparisons, moves
-   and complexity.
-4. **Restocking Recommendations**:
-   - C Max-Heap ranking with score, reasons, suggested quantity and score breakdown
-   - one-click "record delivery"
-5. **Inventory Transactions**: stock IN/OUT with validation, plus full and per-product
-   history.
-6. **DSA Algorithm Laboratory**:
-   - real or generated data (up to 5,000 products), adjustable hash bucket count
-   - search comparison, sort comparison and n-scaling chart
-   - hash chain lengths, heap array and tree, extraction order
-   - live edge-case checks, pseudocode
-7. **About and Complexity Analysis**.
+3. **Transactions**:
+   - stock IN/OUT with validation, and history
+   - FIFO stock lots and stock age (circular queue)
+4. **Restocking**:
+   - Max-Heap ranking and score breakdown
+   - budget planner: knapsack DP vs greedy, and one click to order the plan
+5. **Delivery routes**: Dijkstra shortest route on a map of the warehouse and 7
+   branches.
+6. **Search and sorting**: every search structure and all four sorts, with operation
+   counts.
+7. **DSA laboratory**:
+   - real or generated data
+   - hash collisions
+   - heap, AVL tree and trie views
+   - sort scaling chart
+   - editable knapsack DP table
+   - live edge cases, pseudocode
+8. **About**: architecture diagram and complexity table.
 
 ## 6. Project structure
 
@@ -249,13 +286,18 @@ StockWise-Dsa/
 ├── schema.sql             database schema
 ├── requirements.txt
 ├── .streamlit/config.toml theme: colors, Inter font, radii, sidebar
-├── assets/                logo, hero banner, empty-state and architecture artwork (SVG)
+├── assets/                logo, hero banner, empty state, architecture, categories/ (SVG)
 ├── backend/
 │   ├── inventory_types.h  structs, constants, API declarations
 │   ├── search.c           linear + binary search
 │   ├── hash_table.c       separate-chaining hash table
-│   ├── sorting.c          merge + insertion sort
+│   ├── sorting.c          merge, insertion, quick, heap sort
 │   ├── max_heap.c         max-heap priority queue
+│   ├── avl_tree.c         AVL tree, price range queries
+│   ├── trie.c             trie, name prefix search
+│   ├── knapsack.c         0/1 knapsack DP + greedy
+│   ├── graph.c            Dijkstra shortest path
+│   ├── fifo_queue.c       circular queue, FIFO stock lots
 │   ├── inventory_engine.c public API used by Python
 │   ├── Makefile
 │   └── tests/test_engine.c

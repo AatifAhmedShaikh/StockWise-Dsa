@@ -18,7 +18,9 @@ NAME_LEN, CATEGORY_LEN, MISSING = 64, 32, -1
 INT32_MAX = 2**31 - 1
 
 SORT_KEYS = {"id": 0, "name": 1, "price": 2, "quantity": 3, "value": 4}
-ALGORITHMS = {"merge": 0, "insertion": 1}
+ALGORITHMS = {"merge": 0, "insertion": 1, "quick": 2, "heap": 3}
+STABLE_ALGORITHMS = {"merge", "insertion"}
+MAX_KNAPSACK_CELLS = 20_000_000
 
 ERR_NOT_FOUND = -5
 REASONS = {
@@ -81,6 +83,29 @@ class CHashStats(ctypes.Structure):
     ]
 
 
+class CIndexStats(ctypes.Structure):
+    _fields_ = [("avl_nodes", ctypes.c_int32), ("avl_height", ctypes.c_int32),
+                ("avl_rotations", ctypes.c_int32), ("trie_nodes", ctypes.c_int32),
+                ("trie_keys", ctypes.c_int32)]
+
+
+class CAvlNodeInfo(ctypes.Structure):
+    _fields_ = [("product_index", ctypes.c_int32), ("left", ctypes.c_int32),
+                ("right", ctypes.c_int32), ("height", ctypes.c_int32)]
+
+
+class CEdge(ctypes.Structure):
+    _fields_ = [("from_", ctypes.c_int32), ("to", ctypes.c_int32), ("weight", ctypes.c_int32)]
+
+
+class CStockMove(ctypes.Structure):
+    _fields_ = [("quantity", ctypes.c_int32), ("timestamp", ctypes.c_int64)]
+
+
+class CStockLot(ctypes.Structure):
+    _fields_ = [("quantity", ctypes.c_int32), ("received", ctypes.c_int64)]
+
+
 def _library_path():
     if os.environ.get("STOCKWISE_LIB"):
         return os.environ["STOCKWISE_LIB"]
@@ -127,11 +152,24 @@ def load_library():
                                 p(CRestockItem), p(COpStats)], i32),
         "sw_hash_stats": ([ctypes.c_void_p, p(CHashStats)], i32),
         "sw_hash_chain_lengths": ([ctypes.c_void_p, p(i32), i32], i32),
+        "sw_price_range": ([ctypes.c_void_p, ctypes.c_double, ctypes.c_double, p(i32), i32,
+                            p(i32), p(i64)], i32),
+        "sw_prefix_search": ([ctypes.c_void_p, ctypes.c_char_p, p(i32), i32, p(i32), p(i64)],
+                             i32),
+        "sw_index_stats": ([ctypes.c_void_p, p(CIndexStats)], i32),
+        "sw_avl_snapshot": ([ctypes.c_void_p, p(CAvlNodeInfo), i32, p(i32)], i32),
+        "sw_knapsack": ([p(i32), p(ctypes.c_double), i32, i32, p(ctypes.c_uint8),
+                         p(ctypes.c_double), p(ctypes.c_double), p(COpStats)], i32),
+        "sw_knapsack_greedy": ([p(i32), p(ctypes.c_double), i32, i32, p(ctypes.c_uint8),
+                                p(ctypes.c_double), p(COpStats)], i32),
+        "sw_shortest_path": ([i32, p(CEdge), i32, i32, i32, p(i32), p(i32), p(i32),
+                              p(COpStats)], i32),
+        "sw_fifo_lots": ([p(CStockMove), i32, p(CStockLot), i32, p(i32), p(COpStats)], i32),
     }
     for name, (argtypes, restype) in signatures.items():
         fn = getattr(lib, name)
         fn.argtypes, fn.restype = argtypes, restype
-    if lib.sw_api_version() != 1:
+    if lib.sw_api_version() != 2:
         raise StockWiseError("C library API version mismatch; rebuild with make")
     _lib = lib
     return lib
@@ -309,3 +347,131 @@ class Engine:
         _check(self._lib.sw_hash_chain_lengths(self._handle, chains, stats.bucket_count))
         return {name: getattr(stats, name) for name, _ in CHashStats._fields_} | \
             {"chain_lengths": list(chains)}
+
+    def price_range(self, min_price, max_price):
+        """Products with min_price <= price <= max_price, ascending (C AVL tree)."""
+        self._require_open()
+        for v in (min_price, max_price):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or math.isnan(v):
+                raise ValueError("price bounds must be numbers")
+        if min_price > max_price:
+            raise ValueError("minimum price must not exceed maximum price")
+        out = (ctypes.c_int32 * max(self.count, 1))()
+        count, visited = ctypes.c_int32(0), ctypes.c_int64(0)
+        _check(self._lib.sw_price_range(self._handle, float(min_price), float(max_price), out,
+                                        self.count, ctypes.byref(count),
+                                        ctypes.byref(visited)), allow_not_found=True)
+        return {"products": [self.products[out[i]] for i in range(count.value)],
+                "nodes_visited": visited.value}
+
+    def prefix_search(self, prefix):
+        """Autocomplete: names with a word starting with `prefix` (C trie)."""
+        self._require_open()
+        prefix = (prefix or "").strip()
+        if not prefix:
+            raise ValueError("prefix must not be empty")
+        out = (ctypes.c_int32 * max(self.count, 1))()
+        count, visited = ctypes.c_int32(0), ctypes.c_int64(0)
+        _check(self._lib.sw_prefix_search(self._handle, prefix.encode(), out, self.count,
+                                          ctypes.byref(count), ctypes.byref(visited)),
+               allow_not_found=True)
+        return {"products": [self.products[out[i]] for i in range(count.value)],
+                "nodes_visited": visited.value}
+
+    def index_stats(self):
+        self._require_open()
+        stats = CIndexStats()
+        _check(self._lib.sw_index_stats(self._handle, ctypes.byref(stats)))
+        return {name: getattr(stats, name) for name, _ in CIndexStats._fields_}
+
+    def avl_nodes(self):
+        """Pre-order AVL nodes: product, left/right child positions (-1 = none), height."""
+        self._require_open()
+        out = (CAvlNodeInfo * max(self.count, 1))()
+        count = ctypes.c_int32(0)
+        _check(self._lib.sw_avl_snapshot(self._handle, out, self.count, ctypes.byref(count)))
+        return [{"product": self.products[out[i].product_index], "left": out[i].left,
+                 "right": out[i].right, "height": out[i].height} for i in range(count.value)]
+
+
+def _knapsack_inputs(costs, values, budget):
+    if len(costs) != len(values):
+        raise ValueError("costs and values must have the same length")
+    costs = [_int(c, "cost", 0) for c in costs]
+    for v in values:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) \
+                or v < 0:
+            raise ValueError("values must be non-negative numbers")
+    budget = _int(budget, "budget", 0)
+    n = len(costs)
+    return (n, (ctypes.c_int32 * max(n, 1))(*costs),
+            (ctypes.c_double * max(n, 1))(*map(float, values)), budget)
+
+
+def knapsack(costs, values, budget, with_table=False):
+    """0/1 knapsack by dynamic programming in C. Returns chosen item positions,
+    the best total value, cells evaluated, and optionally the DP table."""
+    n, c_costs, c_values, budget = _knapsack_inputs(costs, values, budget)
+    if n * (budget + 1) > MAX_KNAPSACK_CELLS:
+        raise ValueError("budget too large for the DP table; lower it or use fewer items")
+    lib = load_library()
+    chosen, best, stats = (ctypes.c_uint8 * max(n, 1))(), ctypes.c_double(0), COpStats()
+    width = budget + 1
+    table = (ctypes.c_double * ((n + 1) * width))() if with_table else None
+    _check(lib.sw_knapsack(c_costs, c_values, n, budget, chosen, ctypes.byref(best), table,
+                           ctypes.byref(stats)))
+    result = {"chosen": [i for i in range(n) if chosen[i]], "value": best.value,
+              "cells": stats.comparisons}
+    if with_table:
+        result["table"] = [list(table[r * width:(r + 1) * width]) for r in range(n + 1)]
+    return result
+
+
+def knapsack_greedy(costs, values, budget):
+    """Greedy by value/cost ratio in C (uses the Max-Heap). Not always optimal."""
+    n, c_costs, c_values, budget = _knapsack_inputs(costs, values, budget)
+    lib = load_library()
+    chosen, best, stats = (ctypes.c_uint8 * max(n, 1))(), ctypes.c_double(0), COpStats()
+    _check(lib.sw_knapsack_greedy(c_costs, c_values, n, budget, chosen, ctypes.byref(best),
+                                  ctypes.byref(stats)))
+    return {"chosen": [i for i in range(n) if chosen[i]], "value": best.value,
+            "comparisons": stats.comparisons}
+
+
+def shortest_path(node_count, edges, source, target):
+    """Dijkstra in C. edges = [(a, b, distance), ...] (undirected). Returns the
+    route as node numbers (empty if unreachable) and every node's distance."""
+    node_count = _int(node_count, "node count", 1)
+    c_edges = (CEdge * max(len(edges), 1))()
+    for i, (a, b, w) in enumerate(edges):
+        c_edges[i] = CEdge(_int(a, "edge start", 0, node_count - 1),
+                           _int(b, "edge end", 0, node_count - 1), _int(w, "distance", 1))
+    source = _int(source, "source", 0, node_count - 1)
+    target = _int(target, "target", 0, node_count - 1)
+    lib = load_library()
+    dist, path = (ctypes.c_int32 * node_count)(), (ctypes.c_int32 * node_count)()
+    length, stats = ctypes.c_int32(0), COpStats()
+    _check(lib.sw_shortest_path(node_count, c_edges, len(edges), source, target, dist, path,
+                                ctypes.byref(length), ctypes.byref(stats)),
+           allow_not_found=True)
+    return {"path": list(path[:length.value]),
+            "distances": [None if d < 0 else d for d in dist],
+            "comparisons": stats.comparisons, "relaxations": stats.moves}
+
+
+def fifo_lots(moves):
+    """Replay (signed quantity, unix timestamp) moves through the C circular
+    queue. Returns the stock lots still on hand, oldest first."""
+    c_moves = (CStockMove * max(len(moves), 1))()
+    for i, (qty, ts) in enumerate(moves):
+        if _int(qty, "quantity", -INT32_MAX) == 0:
+            raise ValueError("quantity must not be zero")
+        c_moves[i] = CStockMove(qty, _int(ts, "timestamp", 0, 2**62))
+    stock_ins = sum(1 for q, _ in moves if q > 0)
+    lib = load_library()
+    lots, count, stats = (CStockLot * max(stock_ins, 1))(), ctypes.c_int32(0), COpStats()
+    _check(lib.sw_fifo_lots(c_moves, len(moves), lots, stock_ins, ctypes.byref(count),
+                            ctypes.byref(stats)))
+    return {"lots": [{"quantity": lots[i].quantity, "received": lots[i].received}
+                     for i in range(count.value)],
+            "queue_operations": stats.moves}

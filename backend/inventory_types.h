@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define SW_API_VERSION 1
+#define SW_API_VERSION 2
 #define SW_NAME_LEN 64      /* bytes incl. terminating NUL -> max 63 chars */
 #define SW_CATEGORY_LEN 32  /* bytes incl. terminating NUL -> max 31 chars */
 #define SW_MISSING (-1)     /* value used for an unknown demand/importance */
@@ -48,6 +48,12 @@
 
 #define SW_ALGO_MERGE 0
 #define SW_ALGO_INSERTION 1
+#define SW_ALGO_QUICK 2 /* median-of-three, not stable */
+#define SW_ALGO_HEAP 3  /* in-place heap sort, not stable */
+
+/* ---------- limits for the planning algorithms ---------- */
+#define SW_MAX_KNAPSACK_CELLS 20000000 /* n * (budget + 1) */
+#define SW_UNREACHABLE (-1)            /* distance to a node with no path */
 
 /* ---------- restock reason flags (bitmask) ---------- */
 #define SW_REASON_OUT_OF_STOCK 1u
@@ -106,6 +112,36 @@ typedef struct {
     double load_factor;     /* item_count / bucket_count */
 } HashStats;
 
+typedef struct {
+    int32_t avl_nodes;
+    int32_t avl_height;     /* a single node has height 1 */
+    int32_t avl_rotations;  /* rotations performed while building the tree */
+    int32_t trie_nodes;
+    int32_t trie_keys;      /* word-start suffixes inserted (several per name) */
+} IndexStats;
+
+typedef struct {
+    int32_t product_index;  /* position in the input array */
+    int32_t left;           /* position of the left child in the snapshot, -1 = none */
+    int32_t right;          /* position of the right child in the snapshot, -1 = none */
+    int32_t height;
+} AvlNodeInfo;
+
+typedef struct {
+    int32_t from, to;       /* node numbers 0..node_count-1 (undirected edge) */
+    int32_t weight;         /* distance, > 0 */
+} Edge;
+
+typedef struct {
+    int32_t quantity;       /* + for stock in, - for stock out */
+    int64_t timestamp;      /* seconds since the epoch; moves must be in time order */
+} StockMove;
+
+typedef struct {
+    int32_t quantity;       /* units still on hand from this delivery */
+    int64_t received;       /* timestamp of the delivery */
+} StockLot;
+
 /* ---------- internal module APIs (used by inventory_engine.c and tests) ---------- */
 
 /* search.c - operate on caller-provided arrays */
@@ -126,11 +162,37 @@ void ht_stats(const HashTable *ht, HashStats *out);
 int32_t ht_chain_lengths(const HashTable *ht, int32_t *out, int32_t capacity);
 void ht_destroy(HashTable *ht);
 
-/* sorting.c - sort an index array (idx[0..n-1]) by a product key; stable */
+/* sorting.c - sort an index array (idx[0..n-1]) by a product key.
+ * Merge and insertion sort are stable; quick and heap sort are not. */
 int32_t merge_sort_indices(const Product *items, int32_t *idx, int32_t n,
                            int32_t key, int32_t descending, OpStats *stats);
 int32_t insertion_sort_indices(const Product *items, int32_t *idx, int32_t n,
                                int32_t key, int32_t descending, OpStats *stats);
+int32_t quick_sort_indices(const Product *items, int32_t *idx, int32_t n,
+                           int32_t key, int32_t descending, OpStats *stats);
+int32_t heap_sort_indices(const Product *items, int32_t *idx, int32_t n,
+                          int32_t key, int32_t descending, OpStats *stats);
+
+/* avl_tree.c - self-balancing BST keyed by (price, id), value = array index */
+typedef struct AvlTree AvlTree;
+AvlTree *avl_create(const Product *items, int32_t capacity);
+int32_t avl_insert(AvlTree *t, int32_t index);
+/* In-order (ascending price) indices with min_price <= price <= max_price. */
+int32_t avl_range(const AvlTree *t, double min_price, double max_price, int32_t *out,
+                  int32_t capacity, int32_t *out_count, int64_t *visited);
+int32_t avl_snapshot(const AvlTree *t, AvlNodeInfo *out, int32_t capacity, int32_t *out_count);
+void avl_stats(const AvlTree *t, IndexStats *out);
+void avl_destroy(AvlTree *t);
+
+/* trie.c - prefix tree over every word start of each product name */
+typedef struct Trie Trie;
+Trie *trie_create(int32_t product_count);
+int32_t trie_insert(Trie *t, const char *name, int32_t index);
+/* Case-insensitive prefix match; results are alphabetical and de-duplicated. */
+int32_t trie_prefix(const Trie *t, const char *prefix, int32_t *out, int32_t capacity,
+                    int32_t *out_count, int64_t *visited);
+void trie_stats(const Trie *t, IndexStats *out);
+void trie_destroy(Trie *t);
 
 /* max_heap.c - max-heap priority queue of RestockItem ordered by score */
 typedef struct MaxHeap MaxHeap;
@@ -177,5 +239,43 @@ int32_t sw_restock_ranking(const SwEngine *engine, RestockItem *out, int32_t cap
 
 int32_t sw_hash_stats(const SwEngine *engine, HashStats *out);
 int32_t sw_hash_chain_lengths(const SwEngine *engine, int32_t *out, int32_t capacity);
+
+/* AVL tree range query and trie prefix search. Buffers need sw_engine_count()
+ * slots. Both return SW_ERR_NOT_FOUND when nothing matches. */
+int32_t sw_price_range(const SwEngine *engine, double min_price, double max_price,
+                       int32_t *out_indices, int32_t capacity, int32_t *out_count,
+                       int64_t *nodes_visited);
+int32_t sw_prefix_search(const SwEngine *engine, const char *prefix, int32_t *out_indices,
+                         int32_t capacity, int32_t *out_count, int64_t *nodes_visited);
+int32_t sw_index_stats(const SwEngine *engine, IndexStats *out);
+int32_t sw_avl_snapshot(const SwEngine *engine, AvlNodeInfo *out, int32_t capacity,
+                        int32_t *out_count);
+
+/* ---------- planning algorithms (knapsack.c, graph.c, fifo_queue.c) ----------
+ * These are stateless: every input and output buffer belongs to the caller. */
+
+/* 0/1 knapsack by dynamic programming. chosen_out[i] = 1 if item i is picked.
+ * table_out may be NULL; otherwise it receives the (n+1) x (budget+1) DP table
+ * row by row. stats->comparisons counts DP cells evaluated. */
+int32_t sw_knapsack(const int32_t *costs, const double *values, int32_t n, int32_t budget,
+                    uint8_t *chosen_out, double *best_value_out, double *table_out,
+                    OpStats *stats);
+/* Greedy by value/cost ratio (uses the Max-Heap). Fast but not always optimal. */
+int32_t sw_knapsack_greedy(const int32_t *costs, const double *values, int32_t n,
+                           int32_t budget, uint8_t *chosen_out, double *best_value_out,
+                           OpStats *stats);
+
+/* Dijkstra on an undirected weighted graph. dist_out and path_out hold
+ * node_count entries; unreachable nodes get SW_UNREACHABLE. path_out lists the
+ * route source..target. Returns SW_ERR_NOT_FOUND if target is unreachable. */
+int32_t sw_shortest_path(int32_t node_count, const Edge *edges, int32_t edge_count,
+                         int32_t source, int32_t target, int32_t *dist_out,
+                         int32_t *path_out, int32_t *path_len_out, OpStats *stats);
+
+/* FIFO stock lots: replays moves through a circular queue (stock in = enqueue,
+ * stock out = consume from the front). lots_out needs one slot per stock-in move.
+ * Returns SW_ERR_INVALID_VALUE if a move removes more than is on hand. */
+int32_t sw_fifo_lots(const StockMove *moves, int32_t n, StockLot *lots_out, int32_t capacity,
+                     int32_t *lot_count, OpStats *stats);
 
 #endif /* INVENTORY_TYPES_H */

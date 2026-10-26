@@ -4,7 +4,9 @@ SQLite is the single source of truth. The C engine is rebuilt from
 list_products() whenever the app needs it, so its indexes are never stale.
 """
 import os
+import random
 import sqlite3
+from datetime import datetime, timedelta
 
 from c_bridge import validate_product
 
@@ -47,6 +49,25 @@ SAMPLE_PRODUCTS = [
 ]
 
 
+# Delivery network for the route planner: (name, x, y) map positions and
+# undirected roads (from, to, km). Node 0 is the warehouse.
+LOCATIONS = [
+    ("Central Warehouse", 0.0, 0.0),
+    ("North Branch", 0.3, 2.4),
+    ("Market Square", 2.2, 1.2),
+    ("Riverside Store", -2.3, 0.9),
+    ("University Store", 2.6, -1.1),
+    ("Harbor Depot", -2.0, -1.6),
+    ("Airport Outlet", 0.4, -2.7),
+    ("Hilltop Mart", 4.3, 0.3),
+]
+ROUTES = [
+    (0, 1, 14), (0, 2, 11), (0, 3, 13), (0, 4, 16), (0, 5, 15), (0, 6, 26),
+    (1, 2, 9), (1, 3, 12), (2, 4, 8), (2, 7, 10), (4, 7, 7), (4, 6, 12),
+    (5, 6, 9), (3, 5, 10),
+]
+
+
 def connect(path=DEFAULT_DB):
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -58,8 +79,40 @@ def init_db(conn, seed=True):
     """Create tables; seed sample data the first time if requested."""
     conn.executescript(SCHEMA)
     if seed and conn.execute("SELECT COUNT(*) FROM products").fetchone()[0] == 0:
-        for row in SAMPLE_PRODUCTS:
-            add_product(conn, dict(zip(PRODUCT_FIELDS, row)), note="Opening stock")
+        seed_history(conn)
+
+
+def seed_history(conn, seed=7):
+    """Sample products with about 90 days of backdated deliveries and sales that
+    end exactly at each product's listed quantity."""
+    rng = random.Random(seed)
+    now = datetime.now().replace(microsecond=0)
+
+    def stamp(days_ago, hours_ago=0):
+        return (now - timedelta(days=days_ago, hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
+
+    for row in SAMPLE_PRODUCTS:
+        p = dict(zip(PRODUCT_FIELDS, row))
+        # Walk backwards from today's quantity: undoing a sale adds units back,
+        # undoing a delivery removes them (never below zero).
+        balance, day, events = p["quantity"], rng.randint(1, 4), []
+        start = rng.randint(60, 90)
+        sale_size = max(2, (p["demand"] or 20) // 3)
+        while day < start:
+            if balance >= 10 and rng.random() < 0.3:
+                qty = rng.randint(10, min(balance, 80))
+                balance -= qty
+                events.append((day, "IN", qty, "Supplier delivery"))
+            else:
+                qty = rng.randint(1, sale_size)
+                balance += qty
+                events.append((day, "OUT", qty, "Customer orders"))
+            day += rng.randint(3, 8)
+        add_product(conn, {**p, "quantity": balance}, note="Opening stock",
+                    created_at=stamp(start, rng.randint(0, 8)))
+        for day, tx_type, qty, note in reversed(events):
+            record_transaction(conn, p["id"], tx_type, qty, note,
+                               created_at=stamp(day, rng.randint(0, 8)))
 
 
 def list_products(conn):
@@ -76,21 +129,23 @@ def get_product(conn, product_id):
     return dict(row) if row else None
 
 
-def add_product(conn, product, note="Initial stock"):
-    """Insert a product; its starting quantity is logged as an IN transaction."""
+def add_product(conn, product, note="Initial stock", created_at=None):
+    """Insert a product; its starting quantity is logged as an IN transaction.
+    created_at ('YYYY-MM-DD HH:MM:SS') backdates the records; default is now."""
     p = validate_product(product)
     with conn:  # one transaction: product row + opening history row
         try:
-            conn.execute(f"INSERT INTO products ({', '.join(PRODUCT_FIELDS)}) "
-                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                         tuple(p[f] for f in PRODUCT_FIELDS))
+            conn.execute(f"INSERT INTO products ({', '.join(PRODUCT_FIELDS)}, created_at) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, "
+                         "COALESCE(?, datetime('now', 'localtime')))",
+                         (*(p[f] for f in PRODUCT_FIELDS), created_at))
         except sqlite3.IntegrityError as exc:
             raise ValueError(f"product id {p['id']} already exists") from exc
         if p["quantity"] > 0:
             conn.execute("INSERT INTO inventory_transactions "
-                         "(product_id, type, quantity, balance_after, note) "
-                         "VALUES (?, 'IN', ?, ?, ?)",
-                         (p["id"], p["quantity"], p["quantity"], note))
+                         "(product_id, type, quantity, balance_after, note, created_at) "
+                         "VALUES (?, 'IN', ?, ?, ?, COALESCE(?, datetime('now', 'localtime')))",
+                         (p["id"], p["quantity"], p["quantity"], note, created_at))
     return p
 
 
@@ -118,7 +173,7 @@ def delete_product(conn, product_id):
         raise ValueError(f"product {product_id} not found")
 
 
-def record_transaction(conn, product_id, tx_type, quantity, note=""):
+def record_transaction(conn, product_id, tx_type, quantity, note="", created_at=None):
     """Add (IN) or remove (OUT) stock atomically. Raises ValueError if the
     product is missing, the quantity is invalid, or stock would go negative."""
     if tx_type not in ("IN", "OUT"):
@@ -140,8 +195,9 @@ def record_transaction(conn, product_id, tx_type, quantity, note=""):
         balance = conn.execute("SELECT quantity FROM products WHERE id = ?",
                                (product_id,)).fetchone()[0]
         conn.execute("INSERT INTO inventory_transactions "
-                     "(product_id, type, quantity, balance_after, note) VALUES (?, ?, ?, ?, ?)",
-                     (product_id, tx_type, quantity, balance, note.strip() or None))
+                     "(product_id, type, quantity, balance_after, note, created_at) "
+                     "VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now', 'localtime')))",
+                     (product_id, tx_type, quantity, balance, note.strip() or None, created_at))
     return balance
 
 
@@ -153,7 +209,7 @@ def list_transactions(conn, product_id=None, limit=None):
     if product_id is not None:
         sql += " WHERE t.product_id = ?"
         params.append(product_id)
-    sql += " ORDER BY t.id DESC"
+    sql += " ORDER BY t.created_at DESC, t.id DESC"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)

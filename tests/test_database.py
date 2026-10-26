@@ -6,7 +6,9 @@ import tempfile
 import unittest
 
 import database as db
-from c_bridge import Engine
+from datetime import datetime
+
+from c_bridge import Engine, fifo_lots
 
 
 def item(pid=1, **kw):
@@ -106,6 +108,35 @@ class DatabaseTests(unittest.TestCase):
         with Engine(db.list_products(self.conn)) as engine:
             self.assertEqual([p["id"] for p in engine.restock_ranking()["ranking"]], [1])
             self.assertEqual(engine.hash_search(1)["product"]["quantity"], 2)
+
+
+    def test_seeded_history_ends_at_listed_quantities(self):
+        db.init_db(self.conn, seed=True)
+        listed = {row[0]: row[4] for row in db.SAMPLE_PRODUCTS}
+        for p in db.list_products(self.conn):
+            self.assertEqual(p["quantity"], listed[p["id"]])
+            history = db.list_transactions(self.conn, product_id=p["id"])
+            self.assertGreater(len(history), 1)
+            history.sort(key=lambda t: (t["created_at"], t["id"]))
+            balance = 0
+            for t in history:  # every balance_after must match a replay of the moves
+                balance += t["quantity"] if t["type"] == "IN" else -t["quantity"]
+                self.assertEqual(t["balance_after"], balance)
+                self.assertGreaterEqual(balance, 0)
+            # The C FIFO queue must account for exactly the units on hand.
+            moves = [(t["quantity"] if t["type"] == "IN" else -t["quantity"],
+                      int(datetime.strptime(t["created_at"], "%Y-%m-%d %H:%M:%S").timestamp()))
+                     for t in history]
+            self.assertEqual(sum(lot["quantity"] for lot in fifo_lots(moves)["lots"]),
+                             p["quantity"])
+
+    def test_backdated_transaction(self):
+        db.add_product(self.conn, item(), created_at="2026-01-01 09:00:00")
+        db.record_transaction(self.conn, 1, "OUT", 2, created_at="2026-01-05 10:00:00")
+        db.record_transaction(self.conn, 1, "IN", 1)  # now
+        times = [t["created_at"] for t in db.list_transactions(self.conn, product_id=1)]
+        self.assertEqual(times[1:], ["2026-01-05 10:00:00", "2026-01-01 09:00:00"])
+        self.assertEqual(times, sorted(times, reverse=True))
 
 
 if __name__ == "__main__":

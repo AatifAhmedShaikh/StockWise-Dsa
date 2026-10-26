@@ -24,7 +24,7 @@
     <text x="56" y="74" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="600" letter-spacing="2.2" fill="#9ec5f4">INVENTORY OPTIMIZATION SYSTEM</text>
     <text x="56" y="122" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="36" font-weight="700" fill="#ffffff" letter-spacing="-0.6">Know what to restock,</text>
     <text x="56" y="164" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="36" font-weight="700" fill="#ffffff" letter-spacing="-0.6">before it runs out.</text>
-    <text x="56" y="200" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" fill="#cde2fb">Search, sorting, hashing and priority queues implemented in C.</text>
+    <text x="56" y="200" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="15" fill="#cde2fb">Hashing, trees, tries, heaps, graphs and dynamic programming, built in C.</text>
 
     <!-- shelving unit -->
     <g opacity="0.95">

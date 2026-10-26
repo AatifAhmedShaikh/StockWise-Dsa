@@ -190,3 +190,71 @@ overflow.
 - Incremental index updates instead of full rebuilds.
 - A self-balancing BST for range queries, such as "price between X and Y".
 - User accounts.
+
+**22. Why an AVL tree for the price filter, and not the sorted array?**
+- Both answer "price between X and Y" in O(log n + k).
+- A sorted array needs O(n) shifting on every insert, while an AVL insert is
+  O(log n).
+- The AVL tree also shows *self-balancing*. A plain BST built from products added in
+  price order becomes a linked list of height n. The rotations keep the AVL height
+  ≤ 1.44 log₂ n.
+
+**23. Explain the four AVL rotation cases.**
+They are named by where the new node went, relative to the unbalanced node:
+- **Left-Left:** rotate right.
+- **Right-Right:** rotate left.
+- **Left-Right:** rotate the left child left, then rotate the node right.
+- **Right-Left:** the mirror of Left-Right.
+
+Each rotation is O(1) and keeps the BST order.
+
+**24. How does the trie give autocomplete, and why insert every word start?**
+- Walking the prefix from the root takes O(P).
+- Every product below that node matches.
+- A DFS over children kept in sorted order lists the matches alphabetically.
+- Inserting each word start (not just the full name) lets "cab" find "USB-C Charging
+  Cable".
+- A `seen[]` array prevents duplicates when one name has several matching words.
+
+**25. Why is Quick Sort's worst case O(n²), and how did you avoid it?**
+- The worst case happens when the pivot is always the smallest or largest key, for
+  example the first element of already-sorted data.
+- **Median-of-three** pivot choice fixes sorted input.
+- **Three-way partitioning** fixes data with many equal keys.
+- Recursing into the smaller side bounds the stack depth at O(log n).
+
+**26. What is the 0/1 knapsack problem here, and why not just use greedy?**
+- Each restock has a cost and a priority, and the budget is limited.
+- The goal is the subset with the highest total priority that fits the budget.
+- Greedy (best priority per dollar first) can miss the optimum. With costs 1, 3, 4, 5,
+  values 1, 4, 5, 7 and budget 7, greedy gets 8 but the best is 9.
+- The DP explores every budget level and is exact, in O(n·W) time.
+
+**27. Why is the knapsack DP called pseudo-polynomial?**
+- Its running time depends on the *value* of the budget W, not on the number of bits
+  needed to write it.
+- A budget of $1,000,000 means a million columns.
+- That is why the engine caps the table size and works in whole dollars.
+
+**28. How does Dijkstra's algorithm work, and why does it need positive weights?**
+- It repeatedly settles the closest unsettled node and relaxes its edges.
+- Once a node is popped with its smallest distance, no later path can be shorter,
+  because every edge adds a positive length.
+- A negative edge would break this, and Bellman-Ford would be needed instead.
+- With a binary heap it runs in O((V + E) log V).
+
+**29. Your Dijkstra uses a max-heap. How does that work?**
+- It pushes `−distance` as the score, so the largest score is the shortest distance.
+- Outdated entries are not removed. When a popped distance is larger than the best
+  known one, it is skipped ("lazy deletion").
+- This saves writing a decrease-key operation.
+
+**30. What is a circular queue and why use one for stock lots?**
+- It is an array where the head and tail wrap around with `mod capacity`, so dequeuing
+  never shifts elements.
+- Stock in enqueues a lot. Stock out consumes from the front, which is FIFO, the
+  oldest stock first.
+- What remains is the stock on hand, with each lot's age.
+- When the array is full it doubles in size, so enqueue is amortized O(1).
+- The tests check that the C queue's remaining units always equal the database
+  quantity.
