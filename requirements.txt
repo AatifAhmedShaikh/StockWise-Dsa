@@ -1,3 +1,5 @@
-streamlit>=1.50
-plotly>=5.20
-pandas>=2.0
+# OPTIONAL. Only the Streamlit interface (app.py) needs these; the default interface
+# (python stockwise.py) needs nothing installed. Streamlit needs Python 3.11 or newer.
+streamlit>=1.66
+plotly>=6.0
+pandas>=2.2

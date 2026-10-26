@@ -1,8 +1,40 @@
 # StockWise: Inventory Optimization System Using DSA
 
-A college Data Structures & Algorithms project. The interface is **Python + Streamlit**.
-The core algorithms are implemented from scratch in **C11** and compiled into a shared
-library that Python calls through **ctypes**:
+A college Data Structures & Algorithms project: an inventory app whose searching, sorting,
+hashing, trees, tries, heaps, graphs, queues and dynamic programming are all written from
+scratch in **C11** and called from **Python** through `ctypes`. Data lives in **SQLite**.
+
+## Quick start: nothing to install
+
+You only need **Python 3.8 or newer**. No `pip install`, no compiler, no internet.
+
+| System | Run |
+|---|---|
+| Windows | double-click **`run.bat`**, or in a terminal: `python stockwise.py` |
+| Linux / macOS | `./run.sh`, or `python3 stockwise.py` |
+
+Your browser opens at http://127.0.0.1:8765. Press Ctrl+C in the terminal to stop it.
+Options: `--port 9000`, `--no-browser`, `--db my.db`.
+
+Why nothing needs installing:
+- **Interface:** a local web page. Python's built-in web server serves it, and the charts are plain SVG
+  drawn by the page itself (`webui/`).
+- **Database:** SQLite is part of Python.
+- **C engine:** the compiled library ships in `backend/prebuilt/` for Windows (64-bit) and
+  Linux (x86-64). If a C compiler is installed, the library is rebuilt from `backend/*.c` instead.
+  Other systems (for example macOS) need a compiler: `xcode-select --install`.
+
+Optional: a second interface built with Streamlit and Plotly is in `app.py`
+(see [section 7](#7-optional-streamlit-interface)).
+
+| Layer | Technology | Files |
+|---|---|---|
+| Interface (default) | Python standard library web server + HTML, CSS, JavaScript, SVG | `stockwise.py`, `webui/` |
+| Interface (optional) | Streamlit, Plotly, pandas | `app.py` |
+| Python <-> C bridge | `ctypes` | `c_bridge.py`, `build_c.py` |
+| DSA engine | C11 | `backend/*.c`, `backend/inventory_types.h` |
+| Persistence | SQLite (`sqlite3`) | `database.py`, `schema.sql` |
+| Tests | C test program, Python `unittest` | `backend/tests/test_engine.c`, `tests/` |
 
 | Concept (C) | File | Feature in the app |
 |---|---|---|
@@ -16,20 +48,10 @@ library that Python calls through **ctypes**:
 | Graph + Dijkstra shortest path | `graph.c` | Delivery route planner |
 | Circular FIFO queue (ring buffer) | `fifo_queue.c` | Stock lots and stock age |
 
-**SQLite** stores products and stock transactions.
-
-| Layer | Technology | Files |
-|---|---|---|
-| Frontend | Python 3.9+, Streamlit, Plotly | `app.py` |
-| Python ↔ C bridge | `ctypes` | `c_bridge.py` |
-| DSA engine | C11, GCC/Clang | `backend/*.c`, `backend/inventory_types.h`, `backend/Makefile` |
-| Persistence | SQLite (Python `sqlite3`) | `database.py`, `schema.sql` |
-| Tests | C test program, Python `unittest` | `backend/tests/test_engine.c`, `tests/` |
-
 More documents:
 - [`docs/ALGORITHMS.md`](docs/ALGORITHMS.md): pseudocode, complexity table, priority formula
 - [`docs/REPORT_AND_VIVA.md`](docs/REPORT_AND_VIVA.md): college report outline and viva questions with answers
-- [`docs/StockWise_Project_Overview.pptx`](docs/StockWise_Project_Overview.pptx): 27-slide presentation: what the project is, the purpose of every file, how the code works together, with speaker notes
+- [`docs/StockWise_Project_Overview.pptx`](docs/StockWise_Project_Overview.pptx): presentation of what the project is and what every file does
 
 ---
 
@@ -39,7 +61,7 @@ More documents:
 
 ```mermaid
 flowchart TD
-    UI["Streamlit UI (app.py)<br/>8 pages"] -->|product dicts| BR["c_bridge.py<br/>validation + ctypes structs"]
+    UI["Web interface<br/>webui/ (or app.py)<br/>8 pages"] -->|product dicts| BR["c_bridge.py<br/>validation + ctypes structs"]
     BR -->|"Product[] , int32 args"| ENG["libstockwise (C)<br/>inventory_engine.c"]
     ENG --> S["search.c<br/>linear / binary"]
     ENG --> H["hash_table.c<br/>separate chaining"]
@@ -72,7 +94,7 @@ flowchart TD
    index back to the product dict.
 5. `Engine.close()` (or the `with` block) calls `sw_engine_destroy()`, which frees all
    C memory.
-6. The app rebuilds the engine from SQLite on **every page load**. After any add, edit,
+6. The app rebuilds the engine from SQLite for **every request**. After any add, edit,
    delete or stock change, the C indexes can never be stale.
 
 The C engine never stores inventory itself; it is a read-only snapshot used for DSA work.
@@ -117,57 +139,41 @@ The C engine never stores inventory itself; it is a read-only snapshot used for 
 
 ---
 
-## 2. Setup
+## 2. Setup details
 
-### Linux (Ubuntu/Debian)
+### Which C library gets loaded (`build_c.py`)
+
+`c_bridge.load_library()` calls `build_c.ensure_library()`, which picks the first that works:
+1. a library built from the current sources (`backend/libstockwise.so`, `stockwise.dll` on Windows);
+2. else, if a C compiler is found, it builds one (any `gcc`, `cc` or `clang` on PATH, or MSYS2 GCC
+   in its default Windows folders). It rebuilds automatically when a `.c` file changes;
+3. else the pre-built library in `backend/prebuilt/`.
+
+You can also build by hand: `python build_c.py` (add `--test` to run the C tests), or
+`cd backend && make && make test` where `make` exists (Windows: `mingw32-make`).
+
+Set `STOCKWISE_LIB` to use a library at another path, and `STOCKWISE_DB` (or `--db`) for another
+database file. The first run creates `stockwise.db` with 25 sample products and about 90 days of
+backdated deliveries and sales. Delete the file to reset the data.
+
+### Refreshing the pre-built libraries (developers only)
+
+Edited a C file? The pre-built binaries must be rebuilt, or the tests fail on purpose:
 
 ```bash
-sudo apt update && sudo apt install -y build-essential python3 python3-pip python3-venv
-git clone <your-repo-url> StockWise-Dsa && cd StockWise-Dsa
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cd backend && make && make test && cd ..      # builds backend/libstockwise.so
-streamlit run app.py
+python -m pip install ziglang
+python tools/make_prebuilt.py     # cross-compiles the Windows DLL and the Linux library
 ```
 
-On macOS, use `xcode-select --install` for the compiler. `make` builds `libstockwise.dylib`.
+### Troubleshooting
 
-### Windows 10/11
-
-1. Install **64-bit Python 3.9+** from python.org. Tick "Add python.exe to PATH".
-2. Install GCC through **MSYS2**:
-   - Download it from https://www.msys2.org and install it to `C:\msys64`.
-   - Open the *MSYS2 UCRT64* terminal and run:
-     ```
-     pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make
-     ```
-   - Add `C:\msys64\ucrt64\bin` to your Windows **PATH**.
-   - Open a new terminal and check with `gcc --version`.
-3. In **Command Prompt** (cmd.exe), from the project folder:
-   ```bat
-   python -m venv .venv
-   .venv\Scripts\activate
-   pip install -r requirements.txt
-   cd backend
-   mingw32-make
-   mingw32-make test
-   cd ..
-   streamlit run app.py
-   ```
-   `mingw32-make` builds `backend\stockwise.dll`. Without make, you can build it
-   directly:
-   ```bat
-   gcc -std=c11 -O2 -Wall -shared -static-libgcc -o stockwise.dll search.c hash_table.c sorting.c max_heap.c avl_tree.c trie.c knapsack.c graph.c fifo_queue.c inventory_engine.c
-   ```
-
-Python and GCC must both be 64-bit. A 32-bit DLL cannot be loaded by 64-bit Python.
-
-To use a library somewhere else, set the environment variable `STOCKWISE_LIB` to its
-full path. To use another database file, set `STOCKWISE_DB`.
-
-The first run creates `stockwise.db` with 25 realistic sample products and about 90 days
-of backdated deliveries and sales, so the charts and stock-age views have data to show.
-Delete the file to reset the data.
+| Message | Fix |
+|---|---|
+| `Python was not found` | Install Python 3.8+ from python.org and tick "Add python.exe to PATH" |
+| `Address already in use` / page does not load | Another program uses port 8765. StockWise picks the next free port and prints the URL. |
+| `Could not load the C library ... not a valid Win32 application` | A 32-bit Python cannot load the 64-bit DLL. Install 64-bit Python. |
+| `The C library ... is out of date` | Delete `backend/stockwise.dll` (or the `.so`) and start again. |
+| `No C compiler found` (macOS, ARM) | Only these systems lack a pre-built library: install a compiler (`xcode-select --install`). |
 
 ---
 
@@ -175,7 +181,7 @@ Delete the file to reset the data.
 
 ```bash
 cd backend && make test && cd ..                 # C tests (283 checks)
-python -m unittest discover -s tests -v          # Python tests (bridge + SQLite)
+python -m unittest discover -s tests -v          # Python tests (bridge, SQLite, web UI, pre-built binaries)
 ```
 
 | Area | Where |
@@ -194,6 +200,9 @@ python -m unittest discover -s tests -v          # Python tests (bridge + SQLite
 | Dijkstra paths, unreachable nodes, invalid edges | `test_engine.c::test_graph`, `test_shortest_path` |
 | FIFO queue wrap-around and growth, over-removal | `test_engine.c::test_fifo`, `test_fifo_lots` |
 | Seeded history consistent and matched by the C FIFO queue | `test_database.py::test_seeded_history_ends_at_listed_quantities` |
+| Web data layer: search routing, validation, transactions, DP vs greedy, empty inventory | `test_webui.py::ApiTests` |
+| Web server: static files, JSON errors, Host/Content-Type/path-traversal protection | `test_webui.py::ServerTests` |
+| Pre-built libraries match the C sources, are 64-bit, export the API, and are used without a compiler | `test_prebuilt.py` |
 
 The C tests were also run under AddressSanitizer and UndefinedBehaviorSanitizer:
 
@@ -235,17 +244,18 @@ Consistency rules:
 
 ## 5. Application pages
 
-Design notes:
-- **Navigation.** A sidebar with three groups (Overview, Inventory, Algorithms) and
-  [Material Symbols](https://fonts.google.com/icons) icons. The UI uses no emoji.
-- **Theme.** Set in `.streamlit/config.toml`: Inter typeface, blue `#2a78d6` primary,
-  10px radii.
-- **Charts.** All charts share one validated, colorblind-safe palette (blue, orange,
-  aqua), with hover tooltips and direct labels.
-- **Artwork.** The logo, dashboard banner, empty states and architecture diagram are
-  SVG files in `assets/`.
-- **Status.** Stock status always appears as an icon plus a text label, never color
-  alone.
+Both interfaces offer the same eight pages and use the same C engine and database.
+
+Design notes (default web interface, `webui/`):
+- **Navigation.** A sidebar with three groups (Overview, Inventory, Algorithms) and Material
+  Design icons drawn as inline SVG. The UI uses no emoji and loads nothing from the internet.
+- **Charts.** Plain SVG functions in `webui/static/charts.js`, sharing one colour-blind-safe
+  palette (blue, orange, aqua), with hover tooltips and direct labels.
+- **Artwork.** The logo, dashboard banner, empty states, category pictures and architecture
+  diagram are SVG files in `assets/`.
+- **Status.** Stock status always appears as an icon plus a text label, never colour alone.
+- **Safety.** All user text is HTML-escaped; the server listens on 127.0.0.1 only, checks the
+  Host header, and accepts writes only as JSON.
 
 1. **Dashboard**:
    - KPIs, with a 30-day stock sparkline
@@ -281,12 +291,20 @@ Design notes:
 
 ```
 StockWise-Dsa/
-├── app.py                 Streamlit frontend
-├── c_bridge.py            ctypes wrapper
+├── stockwise.py           START HERE: runs the web interface (python stockwise.py)
+├── run.bat / run.sh       one-click start for Windows / Linux and macOS
+├── webui/
+│   ├── server.py          small local web server + JSON routes (standard library)
+│   ├── api.py             data layer: shapes C engine results for the pages
+│   └── static/            the page: index.html, style.css, util.js, charts.js, pages_*.js, icons.js
+├── core.py                shared content: complexity table, pseudocode, sample generator, edge cases
+├── c_bridge.py            ctypes wrapper around the C library
+├── build_c.py             finds/builds the C library (compiler optional)
 ├── database.py            SQLite access layer + sample data
 ├── schema.sql             database schema
-├── requirements.txt
-├── .streamlit/config.toml theme: colors, Inter font, radii, sidebar
+├── app.py                 optional Streamlit interface
+├── requirements.txt       packages for the optional Streamlit interface only
+├── .streamlit/config.toml Streamlit theme
 ├── assets/                logo, hero banner, empty state, architecture, categories/ (SVG)
 ├── backend/
 │   ├── inventory_types.h  structs, constants, API declarations
@@ -300,12 +318,29 @@ StockWise-Dsa/
 │   ├── graph.c            Dijkstra shortest path
 │   ├── fifo_queue.c       circular queue, FIFO stock lots
 │   ├── inventory_engine.c public API used by Python
+│   ├── prebuilt/          ready-made Windows DLL and Linux library (no compiler needed)
 │   ├── Makefile
 │   └── tests/test_engine.c
+├── tools/make_prebuilt.py developer tool that cross-compiles backend/prebuilt/ with Zig
 ├── tests/
 │   ├── test_c_bridge.py
-│   └── test_database.py
+│   ├── test_database.py
+│   ├── test_webui.py
+│   └── test_prebuilt.py
 └── docs/
     ├── ALGORITHMS.md
-    └── REPORT_AND_VIVA.md
+    ├── REPORT_AND_VIVA.md
+    └── StockWise_Project_Overview.pptx
 ```
+
+## 7. Optional: Streamlit interface
+
+`app.py` is a second front end with the same pages, built with Streamlit and Plotly. It needs
+Python 3.11+ and packages, so it is optional:
+
+```bash
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
+
+If a package is missing or too old, the page says so instead of showing a traceback.

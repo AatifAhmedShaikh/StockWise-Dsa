@@ -13,7 +13,7 @@ from c_bridge import validate_product
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.environ.get("STOCKWISE_DB", os.path.join(HERE, "stockwise.db"))
 
-with open(os.path.join(HERE, "schema.sql")) as _f:
+with open(os.path.join(HERE, "schema.sql"), encoding="utf-8") as _f:
     SCHEMA = _f.read()
 
 PRODUCT_FIELDS = ("id", "name", "category", "price", "quantity", "min_stock", "demand",

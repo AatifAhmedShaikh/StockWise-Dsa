@@ -10,9 +10,11 @@ are Python-owned ctypes arrays, so nothing allocated by C leaks into Python.
 import ctypes
 import math
 import os
-import sys
+import struct
 
-BACKEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
+import build_c
+
+EXPECTED_API_VERSION = 2  # must equal SW_API_VERSION in backend/inventory_types.h
 
 NAME_LEN, CATEGORY_LEN, MISSING = 64, 32, -1
 INT32_MAX = 2**31 - 1
@@ -106,34 +108,28 @@ class CStockLot(ctypes.Structure):
     _fields_ = [("quantity", ctypes.c_int32), ("received", ctypes.c_int64)]
 
 
-def _library_path():
-    if os.environ.get("STOCKWISE_LIB"):
-        return os.environ["STOCKWISE_LIB"]
-    if sys.platform.startswith("win"):
-        name = "stockwise.dll"
-    elif sys.platform == "darwin":
-        name = "libstockwise.dylib"
-    else:
-        name = "libstockwise.so"
-    return os.path.join(BACKEND_DIR, name)
-
-
 _lib = None
 
 
 def load_library():
-    """Load the shared library once and declare every function signature."""
+    """Build the C library if needed, load it once, and declare every signature."""
     global _lib
     if _lib is not None:
         return _lib
-    path = _library_path()
+    try:
+        path = build_c.ensure_library()
+    except build_c.BuildError as exc:
+        raise StockWiseError(f"The C library is missing and could not be built.\n{exc}") from exc
     if not os.path.exists(path):
-        raise StockWiseError(
-            f"C library not found at {path}. Build it first: cd backend && make")
+        raise StockWiseError(f"C library not found at {path} (set by STOCKWISE_LIB).")
     try:
         lib = ctypes.CDLL(path)
     except OSError as exc:
-        raise StockWiseError(f"Could not load C library {path}: {exc}") from exc
+        bits = struct.calcsize("P") * 8
+        raise StockWiseError(
+            f"Could not load the C library {path}: {exc}\n"
+            f"This Python is {bits}-bit, so the library must be built by a {bits}-bit GCC. "
+            f"Delete the file and run again, or rebuild with: python build_c.py") from exc
 
     i32, i64, p = ctypes.c_int32, ctypes.c_int64, ctypes.POINTER
     signatures = {
@@ -169,8 +165,10 @@ def load_library():
     for name, (argtypes, restype) in signatures.items():
         fn = getattr(lib, name)
         fn.argtypes, fn.restype = argtypes, restype
-    if lib.sw_api_version() != 2:
-        raise StockWiseError("C library API version mismatch; rebuild with make")
+    if lib.sw_api_version() != EXPECTED_API_VERSION:
+        raise StockWiseError(
+            f"The C library at {path} is out of date (API {lib.sw_api_version()}, need "
+            f"{EXPECTED_API_VERSION}). Delete that file and start again to rebuild it.")
     _lib = lib
     return lib
 
@@ -345,8 +343,9 @@ class Engine:
         _check(self._lib.sw_hash_stats(self._handle, ctypes.byref(stats)))
         chains = (ctypes.c_int32 * stats.bucket_count)()
         _check(self._lib.sw_hash_chain_lengths(self._handle, chains, stats.bucket_count))
-        return {name: getattr(stats, name) for name, _ in CHashStats._fields_} | \
-            {"chain_lengths": list(chains)}
+        result = {name: getattr(stats, name) for name, _ in CHashStats._fields_}
+        result["chain_lengths"] = list(chains)
+        return result
 
     def price_range(self, min_price, max_price):
         """Products with min_price <= price <= max_price, ascending (C AVL tree)."""

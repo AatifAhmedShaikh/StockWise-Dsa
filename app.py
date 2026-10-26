@@ -7,19 +7,56 @@ in the C engine (backend/libstockwise) through c_bridge.py. SQLite
 """
 import math
 import os
-import random
-import sqlite3
+import sys
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 
-import pandas as pd
-import plotly.express as px
 import streamlit as st
 
-import database as db
-from c_bridge import (STABLE_ALGORITHMS, Engine, StockWiseError, fifo_lots, knapsack,
-                      knapsack_greedy, load_library, shortest_path)
-
 st.set_page_config(page_title="StockWise", page_icon=":material/inventory_2:", layout="wide")
+
+# Oldest versions the app is tested with; see requirements.txt.
+MIN_PYTHON, MIN_PACKAGES = (3, 11), {"streamlit": (1, 66), "plotly": (6, 0), "pandas": (2, 2)}
+
+
+def check_environment():
+    """Return a human-readable list of environment problems (empty if all is well)."""
+    problems = []
+    if sys.version_info < MIN_PYTHON:
+        problems.append("Python %d.%d or newer is required; this is %d.%d."
+                        % (MIN_PYTHON + sys.version_info[:2]))
+    for name, minimum in MIN_PACKAGES.items():
+        try:
+            have = tuple(int(x) for x in version(name).split(".")[:2])
+        except PackageNotFoundError:
+            problems.append(f"`{name}` is not installed.")
+            continue
+        except ValueError:  # unusual version string such as a dev build: trust it
+            continue
+        if have < minimum:
+            problems.append(f"`{name}` {version(name)} is too old; {'.'.join(map(str, minimum))} "
+                            "or newer is required.")
+    return problems
+
+
+_problems = check_environment()
+if _problems:
+    st.error("StockWise cannot start yet:\n\n" + "\n".join(f"- {p}" for p in _problems)
+             + "\n\nIn the project folder run: `python -m pip install -r requirements.txt` "
+             "and start the app with `python -m streamlit run app.py`.",
+             icon=":material/error:")
+    st.stop()
+
+import pandas as pd  # noqa: E402  (imported after the environment check above)
+import plotly.express as px  # noqa: E402
+
+import database as db  # noqa: E402
+from c_bridge import (STABLE_ALGORITHMS, Engine, StockWiseError, fifo_lots,  # noqa: E402
+                      knapsack, knapsack_greedy, load_library, shortest_path)
+from core import (COMPLEXITY_COLUMNS, COMPLEXITY_ROWS, PSEUDOCODE,  # noqa: E402
+                  generate_products, run_edge_cases)
+
+COMPLEXITY = pd.DataFrame(COMPLEXITY_ROWS, columns=COMPLEXITY_COLUMNS)
 
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 LOGO, MARK, HERO, EMPTY, ARCHITECTURE = (os.path.join(ASSETS, f) for f in (
@@ -37,105 +74,6 @@ ALGO_NAMES = {"merge": "Merge Sort", "insertion": "Insertion Sort", "quick": "Qu
 ALGO_COMPLEXITY = {"merge": "O(n log n)", "insertion": "O(n²)", "quick": "O(n log n)",
                    "heap": "O(n log n)"}
 
-COMPLEXITY = pd.DataFrame([
-    ("Linear search", "O(1)", "O(n)", "O(n)", "O(1)", "Works on unsorted data"),
-    ("Binary search", "O(1)", "O(log n)", "O(log n)", "O(1)", "Needs data sorted by id"),
-    ("Hash table lookup", "O(1)", "O(1)", "O(n)", "O(n + m)", "Separate chaining, m buckets"),
-    ("Trie prefix search", "O(P)", "O(P + k)", "O(P·σ + k)", "O(total key length)",
-     "P = prefix length, k = matches, σ = alphabet"),
-    ("AVL price range", "O(log n)", "O(log n + k)", "O(log n + k)", "O(n)",
-     "Height stays ≤ 1.44 log₂ n"),
-    ("Merge Sort", "O(n log n)", "O(n log n)", "O(n log n)", "O(n)", "Stable, divide & conquer"),
-    ("Insertion Sort", "O(n)", "O(n²)", "O(n²)", "O(1)", "Stable, fast on nearly sorted data"),
-    ("Quick Sort", "O(n log n)", "O(n log n)", "O(n²)", "O(log n)",
-     "3-way partition, median-of-three pivot"),
-    ("Heap Sort", "O(n log n)", "O(n log n)", "O(n log n)", "O(1)", "In place, not stable"),
-    ("Heap push / pop", "O(1)", "O(log n)", "O(log n)", "O(1)", "Sift up / sift down"),
-    ("Restock ranking", "O(n log n)", "O(n log n)", "O(n log n)", "O(n)", "n pushes + n pops"),
-    ("FIFO queue (ring buffer)", "O(1)", "O(1) amortized", "O(n) on resize", "O(n)",
-     "Doubles capacity when full"),
-    ("Dijkstra", "O((V+E) log V)", "O((V+E) log V)", "O((V+E) log V)", "O(V + E)",
-     "Binary heap, lazy deletion"),
-    ("Knapsack DP", "O(n·W)", "O(n·W)", "O(n·W)", "O(n·W)", "W = budget; exact"),
-    ("Knapsack greedy", "O(n log n)", "O(n log n)", "O(n log n)", "O(n)",
-     "Heap by value per cost; can miss the optimum"),
-], columns=["Algorithm", "Best", "Average", "Worst", "Space", "Notes"])
-
-PSEUDOCODE = {
-    "Linear search": """for i = 0 to n-1:
-    comparisons += 1
-    if A[i].id == target: return i
-return NOT_FOUND""",
-    "Binary search": """low = 0, high = n-1            # A sorted by id
-while low <= high:
-    mid = low + (high - low) / 2
-    if A[mid].id == target: return mid
-    if A[mid].id < target: low = mid + 1
-    else: high = mid - 1
-return NOT_FOUND""",
-    "Hash table (separate chaining)": """hash(k) = k mod m
-insert(k, v): if k in chain[hash(k)]: DUPLICATE
-              else: new node -> head of chain[hash(k)]
-find(k):      walk chain[hash(k)] comparing keys""",
-    "Trie (prefix tree)": """insert(word):                # for every word start of a name
-    node = root
-    for ch in lower(word): node = child(node, ch) or create it
-    node.entries.append(product)
-prefix(p):
-    walk p character by character from the root (missing child -> none)
-    DFS the subtree, collecting entries (alphabetical, de-duplicated)""",
-    "AVL tree": """insert(node, x):
-    BST insert by (price, id), then on the way back up:
-    update height; balance = height(left) - height(right)
-    balance > 1:  left-right case? rotate_left(left); rotate_right(node)
-    balance < -1: right-left case? rotate_right(right); rotate_left(node)
-range(node, lo, hi):           # in-order, pruned
-    if price >= lo: range(left)
-    if lo <= price <= hi: output node
-    if price <= hi: range(right)""",
-    "Merge Sort": """merge_sort(A, lo, hi):
-    if hi - lo < 2: return
-    mid = (lo + hi) / 2
-    merge_sort(A, lo, mid); merge_sort(A, mid, hi)
-    merge(A, lo, mid, hi)        # take from left on ties -> stable""",
-    "Insertion Sort": """for i = 1 to n-1:
-    current = A[i]; j = i - 1
-    while j >= 0 and A[j] > current:   # strict > keeps it stable
-        A[j+1] = A[j]; j -= 1
-    A[j+1] = current""",
-    "Quick Sort (3-way)": """quick_sort(A, lo, hi):
-    while lo < hi:
-        pivot = median of A[lo], A[mid], A[hi]
-        lt = lo, i = lo, gt = hi            # Dutch national flag
-        while i <= gt:
-            if A[i] < pivot: swap(A[lt++], A[i++])
-            elif A[i] > pivot: swap(A[i], A[gt--])
-            else: i++
-        recurse into the smaller side, loop on the larger""",
-    "Heap Sort": """for i = n/2-1 down to 0: sift_down(A, i, n)     # build max-heap
-for end = n-1 down to 1:
-    swap(A[0], A[end])                           # max to the end
-    sift_down(A, 0, end)""",
-    "Max-Heap priority queue": """push(x):  A[size] = x; sift up while A[i] > A[parent(i)]
-pop():    top = A[0]; A[0] = A[size-1]; sift down; return top
-parent(i) = (i-1)/2, left(i) = 2i+1, right(i) = 2i+2""",
-    "Circular FIFO queue": """enqueue(x): if size == capacity: double the array (unwrapped)
-            A[(head + size) mod capacity] = x; size += 1
-dequeue():  x = A[head]; head = (head + 1) mod capacity; size -= 1
-stock in  -> enqueue(lot)
-stock out -> take units from the front lot; dequeue it when empty""",
-    "Dijkstra": """dist[s] = 0; push (0, s)
-while queue not empty:
-    (d, u) = pop smallest
-    if d > dist[u]: continue           # stale entry
-    for (v, w) in adj[u]:
-        if d + w < dist[v]: dist[v] = d + w; prev[v] = u; push (dist[v], v)""",
-    "0/1 Knapsack (DP)": """dp[0..W] = 0
-for each item i (cost c, value v):
-    for w = W down to c:              # downwards: each item used once
-        if dp[w-c] + v > dp[w]: dp[w] = dp[w-c] + v; keep[i][w] = 1
-walk keep[][] back from W to list the chosen items""",
-}
 
 STATUS_BADGE = {"Out of stock": ":red-badge[:material/error: Out of stock]",
                 "Low stock": ":orange-badge[:material/warning: Low stock]",
@@ -188,6 +126,12 @@ def chart(fig, key, height=320, legend=False, bargap=0.35):
 def category_image(category):
     path = os.path.join(ASSETS, "categories", category.strip().lower().replace(" ", "-") + ".svg")
     return path if os.path.exists(path) else os.path.join(ASSETS, "categories", "other.svg")
+
+
+def price_ceiling(products):
+    """Upper end of a price slider: highest price rounded up, at least $1 so the
+    slider always has min < max (it fails when every price is 0)."""
+    return float(max(1, math.ceil(max((p["price"] for p in products), default=0))))
 
 
 def stock_status(p):
@@ -258,21 +202,6 @@ def pick_product(container, label, products, key=None, extra=lambda p: ""):
     pid = container.selectbox(label, list(by_id), key=key,
                               format_func=lambda i: product_label(by_id[i]) + extra(by_id[i]))
     return by_id[pid]
-
-
-def generate_products(n, seed):
-    """Random but valid inventory for the lab (ids are shuffled, not sorted)."""
-    rng = random.Random(seed)
-    words = ["Steel", "Blue", "Organic", "Mini", "Pro", "Eco", "Classic", "Smart", "Ultra"]
-    things = ["Bolt", "Lamp", "Tea", "Cable", "Notebook", "Soap", "Juice", "Fan", "Mug"]
-    cats = ["Electronics", "Grocery", "Stationery", "Cleaning", "Beverages"]
-    ids = rng.sample(range(1, max(n * 10, 10)), n)
-    return [{"id": i, "name": f"{rng.choice(words)} {rng.choice(things)} {k}",
-             "category": rng.choice(cats), "price": round(rng.uniform(0.5, 120), 2),
-             "quantity": rng.randint(0, 150), "min_stock": rng.randint(5, 60),
-             "demand": None if rng.random() < 0.05 else rng.randint(0, 100),
-             "importance": None if rng.random() < 0.05 else rng.randint(1, 5)}
-            for k, i in enumerate(ids)]
 
 
 def to_epoch(timestamp):
@@ -461,11 +390,11 @@ def page_products(conn, products, engine):
                                                ":material/table_rows: Table"],
                                       default=":material/grid_view: Grid",
                                       label_visibility="collapsed")
-        top_price = math.ceil(max((p["price"] for p in products), default=1.0))
-        low, high = st.slider("Price range", 0.0, float(top_price), (0.0, float(top_price)),
+        top_price = price_ceiling(products)
+        low, high = st.slider("Price range", 0.0, top_price, (0.0, top_price),
                               step=0.5, format="$%.2f")
         shown = products if found is None else found
-        if (low, high) != (0.0, float(top_price)):
+        if (low, high) != (0.0, top_price):
             r = engine.price_range(low, high)
             in_range = {p["id"] for p in r["products"]}
             # Without a search, show the AVL in-order result (ascending price).
@@ -549,9 +478,9 @@ def page_search_sort(products, engine):
                     st.metric(label, work, border=True, icon=":material/compare_arrows:")
                     show_products(r["products"])
             elif method == "AVL price range":
-                top = math.ceil(max((p["price"] for p in products), default=1.0))
-                low, high = st.slider("Price range", 0.0, float(top), (2.0, 8.0), step=0.5,
-                                      format="$%.2f")
+                top = price_ceiling(products)
+                low, high = st.slider("Price range", 0.0, top, (min(2.0, top / 4), min(8.0, top)),
+                                      step=0.5, format="$%.2f")
                 r = engine.price_range(low, high)
                 st.metric("Tree nodes visited", f"{r['nodes_visited']} of {engine.count}",
                           border=True, icon=":material/account_tree:")
@@ -587,6 +516,50 @@ def page_search_sort(products, engine):
                     icon=":material/balance:", help="A stable sort keeps equal keys in their "
                                                     "original order.")
         show_products(r["products"])
+
+
+def budget_planner(conn, ranking, costs):
+    """0/1 knapsack (C dynamic programming) vs greedy, with a one-click order."""
+    card_title("Budget planner")
+    st.caption("Not enough money to restock everything? Pick the set of restocks with the "
+               "highest total priority that fits the budget. Dynamic programming finds the "
+               "best set; the greedy shortcut (best priority per dollar first) is compared.")
+    total = sum(costs)
+    budget = st.slider("Budget", 0, max(total, 1), max(total // 2, min(total, 1)),
+                       step=max(total // 100, 1), format="$%d")
+    values = [p["score"] for p in ranking]
+    try:
+        dp = knapsack(costs, values, budget)
+        greedy = knapsack_greedy(costs, values, budget)
+    except (ValueError, StockWiseError) as exc:
+        st.error(str(exc), icon=":material/error:")
+        return
+    dp_cost = sum(costs[i] for i in dp["chosen"])
+    m = st.columns(4)
+    m[0].metric("DP priority covered", f"{dp['value']:.1f}", border=True,
+                icon=":material/grid_on:",
+                delta=f"{dp['value'] - greedy['value']:+.1f} vs greedy", delta_color="normal")
+    m[1].metric("Greedy priority covered", f"{greedy['value']:.1f}", border=True,
+                icon=":material/bolt:")
+    m[2].metric("DP plan cost", f"${dp_cost:,}", border=True, icon=":material/payments:",
+                help=f"${budget - dp_cost:,} of the budget left over")
+    m[3].metric("DP cells evaluated", f"{dp['cells']:,}", border=True,
+                icon=":material/table:", help="n × (budget + 1) at most")
+    dp_set, greedy_set = set(dp["chosen"]), set(greedy["chosen"])
+    plan = pd.DataFrame([{"Product": p["name"], "Cost": costs[i], "Priority": p["score"],
+                          "Priority per $": p["score"] / costs[i] if costs[i] else None,
+                          "DP plan": "Selected" if i in dp_set else "",
+                          "Greedy plan": "Selected" if i in greedy_set else ""}
+                         for i, p in enumerate(ranking)])
+    st.dataframe(plan, hide_index=True, column_config={
+        "Cost": st.column_config.NumberColumn(format="$%d"),
+        "Priority per $": st.column_config.NumberColumn(format="%.3f")})
+    if st.button("Order the DP plan", type="primary", icon=":material/shopping_cart:",
+                 disabled=not dp["chosen"]):
+        for i in dp["chosen"]:
+            db.record_transaction(conn, ranking[i]["id"], "IN", ranking[i]["suggested_qty"],
+                                  "Budget plan delivery")
+        flash(f"Recorded {len(dp['chosen'])} deliveries costing ${dp_cost:,}")
 
 
 def page_restock(conn, engine):
@@ -634,46 +607,7 @@ def page_restock(conn, engine):
                 "(2 × min stock − quantity if demand is unknown), at least 1.")
 
     with st.container(border=True):
-        card_title("Budget planner")
-        st.caption("Not enough money to restock everything? Pick the set of restocks with the "
-                   "highest total priority that fits the budget. Dynamic programming finds the "
-                   "best set; the greedy shortcut (best priority per dollar first) is compared.")
-        total = sum(costs)
-        budget = st.slider("Budget", 0, max(total, 1), max(total // 2, min(total, 1)),
-                           step=max(total // 100, 1), format="$%d")
-        values = [p["score"] for p in ranking]
-        try:
-            dp = knapsack(costs, values, budget)
-            greedy = knapsack_greedy(costs, values, budget)
-        except (ValueError, StockWiseError) as exc:
-            st.error(str(exc), icon=":material/error:")
-            return
-        dp_cost = sum(costs[i] for i in dp["chosen"])
-        m = st.columns(4)
-        m[0].metric("DP priority covered", f"{dp['value']:.1f}", border=True,
-                    icon=":material/grid_on:",
-                    delta=f"{dp['value'] - greedy['value']:+.1f} vs greedy", delta_color="normal")
-        m[1].metric("Greedy priority covered", f"{greedy['value']:.1f}", border=True,
-                    icon=":material/bolt:")
-        m[2].metric("DP plan cost", f"${dp_cost:,}", border=True, icon=":material/payments:",
-                    help=f"${budget - dp_cost:,} of the budget left over")
-        m[3].metric("DP cells evaluated", f"{dp['cells']:,}", border=True,
-                    icon=":material/table:", help="n × (budget + 1) at most")
-        dp_set, greedy_set = set(dp["chosen"]), set(greedy["chosen"])
-        plan = pd.DataFrame([{"Product": p["name"], "Cost": costs[i], "Priority": p["score"],
-                              "Priority per $": p["score"] / costs[i] if costs[i] else None,
-                              "DP plan": "Selected" if i in dp_set else "",
-                              "Greedy plan": "Selected" if i in greedy_set else ""}
-                             for i, p in enumerate(ranking)])
-        st.dataframe(plan, hide_index=True, column_config={
-            "Cost": st.column_config.NumberColumn(format="$%d"),
-            "Priority per $": st.column_config.NumberColumn(format="%.3f")})
-        if st.button("Order the DP plan", type="primary", icon=":material/shopping_cart:",
-                     disabled=not dp["chosen"]):
-            for i in dp["chosen"]:
-                db.record_transaction(conn, ranking[i]["id"], "IN", ranking[i]["suggested_qty"],
-                                      "Budget plan delivery")
-            flash(f"Recorded {len(dp['chosen'])} deliveries costing ${dp_cost:,}")
+        budget_planner(conn, ranking, costs)
 
     left, right = st.columns([3, 2])
     with left.container(border=True):
@@ -835,56 +769,6 @@ def page_routes():
         st.dataframe(table.sort_values("Distance (km)"), hide_index=True)
         st.caption("Dijkstra settles the closest unsettled location each round, so one run "
                    "gives the shortest distance to every location.")
-
-
-def run_edge_cases():
-    """Execute real edge-case calls against the C engine and a scratch database."""
-    cases = []
-
-    def case(name, expected, fn):
-        try:
-            actual = fn()
-        except (ValueError, StockWiseError) as exc:
-            actual = f"Error: {exc}"
-        cases.append({"Case": name, "Expected": expected, "Actual": str(actual),
-                      "Result": "Passed" if str(actual).startswith(expected) else "Failed"})
-
-    sample = generate_products(5, 1)
-    with Engine([]) as empty, Engine(sample) as eng:
-        case("Hash search on empty array", "not found",
-             lambda: "found" if empty.hash_search(1)["found"] else "not found")
-        case("Binary search on empty array", "not found",
-             lambda: "found" if empty.binary_search(1)["found"] else "not found")
-        case("Sort empty array", "[]", lambda: empty.sort("name")["products"])
-        case("Restock on empty array", "[]", lambda: empty.restock_ranking()["ranking"])
-        case("Price range on empty tree", "[]", lambda: empty.price_range(0, 10)["products"])
-        case("Missing product id (all 3 searches)", "not found",
-             lambda: "found" if any(f(10**7)["found"] for f in
-                                    (eng.linear_search, eng.binary_search, eng.hash_search))
-             else "not found")
-        case("Empty name query", "Error", lambda: eng.search_name(""))
-        case("Empty trie prefix", "Error", lambda: eng.prefix_search(" "))
-        case("Unknown trie prefix", "[]", lambda: eng.prefix_search("zzzz")["products"])
-        case("Price range with min > max", "Error", lambda: eng.price_range(10, 1))
-    case("Duplicate product ids", "Error", lambda: Engine([sample[0], sample[0]]))
-    case("Negative price", "Error", lambda: Engine([{**sample[0], "price": -5}]))
-    case("Negative quantity", "Error", lambda: Engine([{**sample[0], "quantity": -1}]))
-    case("Knapsack with negative budget", "Error", lambda: knapsack([1], [1.0], -1))
-    case("Knapsack with zero budget", "[]", lambda: knapsack([3], [5.0], 0)["chosen"])
-    case("Route to an unreachable node", "[]",
-         lambda: shortest_path(3, [(0, 1, 5)], 0, 2)["path"])
-    case("FIFO: remove more than on hand", "Error", lambda: fifo_lots([(2, 1), (-3, 2)]))
-
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    db.init_db(conn, seed=False)
-    db.add_product(conn, {**sample[0], "quantity": 3})
-    case("Remove more stock than available", "Error",
-         lambda: db.record_transaction(conn, sample[0]["id"], "OUT", 4))
-    case("Stock unchanged after rejected removal", "3",
-         lambda: db.get_product(conn, sample[0]["id"])["quantity"])
-    conn.close()
-    return pd.DataFrame(cases)
 
 
 def tree_dot(nodes, label, max_depth=5):
@@ -1052,8 +936,8 @@ def page_lab(products):
             c[2].metric("Best possible height", ideal, border=True, help="⌈log₂(n + 1)⌉")
             c[3].metric("Rotations while building", stats["avl_rotations"], border=True)
             if data:
-                top = math.ceil(max(p["price"] for p in data))
-                low, high = st.slider("Range query", 0.0, float(top),
+                top = price_ceiling(data)
+                low, high = st.slider("Range query", 0.0, top,
                                       (top * 0.2, top * 0.4), step=0.5, format="$%.2f",
                                       key="lab_range")
                 r = eng.price_range(low, high)
@@ -1133,7 +1017,7 @@ def page_lab(products):
                 chart(fig, "dp_table", height=80 + 44 * len(table))
 
     with tabs[7]:
-        cases = run_edge_cases()
+        cases = pd.DataFrame(run_edge_cases())
         passed = int((cases["Result"] == "Passed").sum())
         st.caption(f"{passed} of {len(cases)} checks passed. These run live against the C "
                    "engine and a scratch database.")

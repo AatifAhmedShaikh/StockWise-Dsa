@@ -1,0 +1,9 @@
+# Keep LF line endings so the Makefile and C sources build the same on Windows and Linux.
+* text=auto
+*.c text eol=lf
+*.h text eol=lf
+Makefile text eol=lf
+*.sh text eol=lf
+*.bat -text
+*.pptx binary
+*.png binary

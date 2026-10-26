@@ -22,6 +22,14 @@
 
 #include <stdint.h>
 
+/* Public functions are exported from the shared library explicitly, so the
+ * Windows DLL exposes exactly the sw_* API (other platforms export by default). */
+#if defined(_WIN32)
+#define SW_EXPORT __declspec(dllexport)
+#else
+#define SW_EXPORT __attribute__((visibility("default")))
+#endif
+
 #define SW_API_VERSION 2
 #define SW_NAME_LEN 64      /* bytes incl. terminating NUL -> max 63 chars */
 #define SW_CATEGORY_LEN 32  /* bytes incl. terminating NUL -> max 31 chars */
@@ -208,47 +216,47 @@ void heap_destroy(MaxHeap *h);
 /* ---------- public engine API (inventory_engine.c, called from Python) ---------- */
 typedef struct SwEngine SwEngine;
 
-int32_t sw_api_version(void);
-const char *sw_error_message(int32_t code);
+SW_EXPORT int32_t sw_api_version(void);
+SW_EXPORT const char *sw_error_message(int32_t code);
 
 /* bucket_count <= 0 selects an automatic size. Returns NULL on error and
  * stores the reason in *error_out (if error_out is not NULL). */
-SwEngine *sw_engine_create(const Product *products, int32_t count,
+SW_EXPORT SwEngine *sw_engine_create(const Product *products, int32_t count,
                            int32_t bucket_count, int32_t *error_out);
-void sw_engine_destroy(SwEngine *engine);
-int32_t sw_engine_count(const SwEngine *engine);
+SW_EXPORT void sw_engine_destroy(SwEngine *engine);
+SW_EXPORT int32_t sw_engine_count(const SwEngine *engine);
 
 /* Searches return SW_OK when found, SW_ERR_NOT_FOUND when missing. */
-int32_t sw_linear_search_id(const SwEngine *engine, int32_t id, SearchResult *out);
-int32_t sw_binary_search_id(const SwEngine *engine, int32_t id, SearchResult *out);
-int32_t sw_hash_search_id(const SwEngine *engine, int32_t id, SearchResult *out);
-int32_t sw_linear_search_name(const SwEngine *engine, const char *query,
+SW_EXPORT int32_t sw_linear_search_id(const SwEngine *engine, int32_t id, SearchResult *out);
+SW_EXPORT int32_t sw_binary_search_id(const SwEngine *engine, int32_t id, SearchResult *out);
+SW_EXPORT int32_t sw_hash_search_id(const SwEngine *engine, int32_t id, SearchResult *out);
+SW_EXPORT int32_t sw_linear_search_name(const SwEngine *engine, const char *query,
                               int32_t *out_indices, int32_t capacity,
                               int32_t *out_count, int64_t *comparisons);
 
-int32_t sw_sort_products(const SwEngine *engine, int32_t algorithm, int32_t key,
+SW_EXPORT int32_t sw_sort_products(const SwEngine *engine, int32_t algorithm, int32_t key,
                          int32_t descending, int32_t *out_indices, int32_t capacity,
                          OpStats *stats);
 
 /* Writes the ranking (highest priority first) to out. heap_snapshot may be
  * NULL; otherwise it receives the heap array before extraction. Both buffers
  * need `capacity` >= sw_engine_count(). */
-int32_t sw_restock_ranking(const SwEngine *engine, RestockItem *out, int32_t capacity,
+SW_EXPORT int32_t sw_restock_ranking(const SwEngine *engine, RestockItem *out, int32_t capacity,
                            int32_t *out_count, RestockItem *heap_snapshot,
                            OpStats *stats);
 
-int32_t sw_hash_stats(const SwEngine *engine, HashStats *out);
-int32_t sw_hash_chain_lengths(const SwEngine *engine, int32_t *out, int32_t capacity);
+SW_EXPORT int32_t sw_hash_stats(const SwEngine *engine, HashStats *out);
+SW_EXPORT int32_t sw_hash_chain_lengths(const SwEngine *engine, int32_t *out, int32_t capacity);
 
 /* AVL tree range query and trie prefix search. Buffers need sw_engine_count()
  * slots. Both return SW_ERR_NOT_FOUND when nothing matches. */
-int32_t sw_price_range(const SwEngine *engine, double min_price, double max_price,
+SW_EXPORT int32_t sw_price_range(const SwEngine *engine, double min_price, double max_price,
                        int32_t *out_indices, int32_t capacity, int32_t *out_count,
                        int64_t *nodes_visited);
-int32_t sw_prefix_search(const SwEngine *engine, const char *prefix, int32_t *out_indices,
+SW_EXPORT int32_t sw_prefix_search(const SwEngine *engine, const char *prefix, int32_t *out_indices,
                          int32_t capacity, int32_t *out_count, int64_t *nodes_visited);
-int32_t sw_index_stats(const SwEngine *engine, IndexStats *out);
-int32_t sw_avl_snapshot(const SwEngine *engine, AvlNodeInfo *out, int32_t capacity,
+SW_EXPORT int32_t sw_index_stats(const SwEngine *engine, IndexStats *out);
+SW_EXPORT int32_t sw_avl_snapshot(const SwEngine *engine, AvlNodeInfo *out, int32_t capacity,
                         int32_t *out_count);
 
 /* ---------- planning algorithms (knapsack.c, graph.c, fifo_queue.c) ----------
@@ -257,25 +265,25 @@ int32_t sw_avl_snapshot(const SwEngine *engine, AvlNodeInfo *out, int32_t capaci
 /* 0/1 knapsack by dynamic programming. chosen_out[i] = 1 if item i is picked.
  * table_out may be NULL; otherwise it receives the (n+1) x (budget+1) DP table
  * row by row. stats->comparisons counts DP cells evaluated. */
-int32_t sw_knapsack(const int32_t *costs, const double *values, int32_t n, int32_t budget,
+SW_EXPORT int32_t sw_knapsack(const int32_t *costs, const double *values, int32_t n, int32_t budget,
                     uint8_t *chosen_out, double *best_value_out, double *table_out,
                     OpStats *stats);
 /* Greedy by value/cost ratio (uses the Max-Heap). Fast but not always optimal. */
-int32_t sw_knapsack_greedy(const int32_t *costs, const double *values, int32_t n,
+SW_EXPORT int32_t sw_knapsack_greedy(const int32_t *costs, const double *values, int32_t n,
                            int32_t budget, uint8_t *chosen_out, double *best_value_out,
                            OpStats *stats);
 
 /* Dijkstra on an undirected weighted graph. dist_out and path_out hold
  * node_count entries; unreachable nodes get SW_UNREACHABLE. path_out lists the
  * route source..target. Returns SW_ERR_NOT_FOUND if target is unreachable. */
-int32_t sw_shortest_path(int32_t node_count, const Edge *edges, int32_t edge_count,
+SW_EXPORT int32_t sw_shortest_path(int32_t node_count, const Edge *edges, int32_t edge_count,
                          int32_t source, int32_t target, int32_t *dist_out,
                          int32_t *path_out, int32_t *path_len_out, OpStats *stats);
 
 /* FIFO stock lots: replays moves through a circular queue (stock in = enqueue,
  * stock out = consume from the front). lots_out needs one slot per stock-in move.
  * Returns SW_ERR_INVALID_VALUE if a move removes more than is on hand. */
-int32_t sw_fifo_lots(const StockMove *moves, int32_t n, StockLot *lots_out, int32_t capacity,
+SW_EXPORT int32_t sw_fifo_lots(const StockMove *moves, int32_t n, StockLot *lots_out, int32_t capacity,
                      int32_t *lot_count, OpStats *stats);
 
 #endif /* INVENTORY_TYPES_H */
