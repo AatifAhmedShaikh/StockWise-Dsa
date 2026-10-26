@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+stockwise.db
+backend/*.so
+backend/*.dylib
+backend/*.dll
+backend/test_engine
+backend/test_engine.exe
