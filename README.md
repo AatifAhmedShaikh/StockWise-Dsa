@@ -29,6 +29,7 @@ library that Python calls through **ctypes**:
 More documents:
 - [`docs/ALGORITHMS.md`](docs/ALGORITHMS.md): pseudocode, complexity table, priority formula
 - [`docs/REPORT_AND_VIVA.md`](docs/REPORT_AND_VIVA.md): college report outline and viva questions with answers
+- [`docs/StockWise_Project_Overview.pptx`](docs/StockWise_Project_Overview.pptx): 16-slide presentation of what each file does, with speaker notes
 
 ---
 
