@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 236 48" width="236" height="48" role="img" aria-label="StockWise">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3987e5"/>
+      <stop offset="1" stop-color="#1c5cab"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="48" height="48" rx="12" fill="url(#g)"/>
+  <rect x="10" y="26" width="8" height="12" rx="2" fill="#ffffff" opacity="0.7"/>
+  <rect x="20" y="19" width="8" height="19" rx="2" fill="#ffffff" opacity="0.85"/>
+  <rect x="30" y="11" width="8" height="27" rx="2" fill="#ffffff"/>
+  <text x="60" y="31" font-family="Inter, 'Segoe UI', system-ui, sans-serif" font-size="22" font-weight="700" fill="#14171f" letter-spacing="-0.3">Stock<tspan fill="#2a78d6">Wise</tspan></text>
+</svg>

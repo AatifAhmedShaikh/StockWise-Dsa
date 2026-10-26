@@ -26,6 +26,8 @@ More documents:
 
 ## 1. Architecture
 
+![StockWise architecture](assets/architecture.svg)
+
 ```mermaid
 flowchart TD
     UI["Streamlit UI (app.py)<br/>7 pages"] -->|product dicts| BR["c_bridge.py<br/>validation + ctypes structs"]
@@ -203,6 +205,18 @@ Consistency rules:
 
 ## 5. Application pages
 
+Design notes:
+- **Navigation.** A sidebar with three groups (Overview, Inventory, Algorithms) and
+  [Material Symbols](https://fonts.google.com/icons) icons. The UI uses no emoji.
+- **Theme.** Set in `.streamlit/config.toml`: Inter typeface, blue `#2a78d6` primary,
+  10px radii.
+- **Charts.** All charts share one validated, colorblind-safe palette (blue, orange,
+  aqua), with hover tooltips and direct labels.
+- **Artwork.** The logo, dashboard banner, empty states and architecture diagram are
+  SVG files in `assets/`.
+- **Status.** Stock status always appears as an icon plus a text label, never color
+  alone.
+
 1. **Dashboard**:
    - KPIs: products, units, value, low and out-of-stock counts
    - value by category, top-10 products by value (C Merge Sort)
@@ -234,6 +248,8 @@ StockWise-Dsa/
 ├── database.py            SQLite access layer + sample data
 ├── schema.sql             database schema
 ├── requirements.txt
+├── .streamlit/config.toml theme: colors, Inter font, radii, sidebar
+├── assets/                logo, hero banner, empty-state and architecture artwork (SVG)
 ├── backend/
 │   ├── inventory_types.h  structs, constants, API declarations
 │   ├── search.c           linear + binary search

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" width="240" height="160" role="img" aria-label="Empty box">
+  <ellipse cx="120" cy="140" rx="78" ry="9" fill="#e1e4ea"/>
+  <!-- open box -->
+  <path d="M60 70 L120 88 L180 70 L180 126 L120 144 L60 126 Z" fill="#ffffff" stroke="#b7d3f6" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M120 88 L120 144" stroke="#b7d3f6" stroke-width="2.5"/>
+  <path d="M60 70 L120 52 L180 70 L120 88 Z" fill="#eef4fc" stroke="#b7d3f6" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- flaps -->
+  <path d="M60 70 L38 92 L98 110 L120 88 Z" fill="#ffffff" stroke="#86b6ef" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M180 70 L202 92 L142 110 L120 88 Z" fill="#ffffff" stroke="#86b6ef" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- sparkles -->
+  <path d="M120 22 v14 M113 29 h14" stroke="#2a78d6" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="86" cy="36" r="3" fill="#86b6ef"/>
+  <circle cx="156" cy="32" r="4" fill="#cde2fb"/>
+</svg>
